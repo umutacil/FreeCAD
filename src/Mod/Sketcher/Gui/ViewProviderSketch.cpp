@@ -46,6 +46,7 @@
 
 #include <Base/Console.h>
 #include <Base/ServiceProvider.h>
+#include <Base/Tools.h>
 #include <Base/Vector3D.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -2295,8 +2296,10 @@ void ViewProviderSketch::onSelectionChanged(const Gui::SelectionChanges& msg)
         }
         else if (msg.Type == Gui::SelectionChanges::AddSelection) {
             // is it this object??
-            if (strcmp(msg.pDocName, getSketchObject()->getDocument()->getName()) == 0
-                && strcmp(msg.pObjectName, getSketchObject()->getNameInDocument()) == 0) {
+            const bool isThisSketch =
+                strcmp(msg.pDocName, getSketchObject()->getDocument()->getName()) == 0
+                && strcmp(msg.pObjectName, getSketchObject()->getNameInDocument()) == 0;
+            if (isThisSketch) {
                 if (msg.pSubName) {
                     std::string shapetype(msg.pSubName);
                     if (shapetype.size() > 4 && shapetype.substr(0, 4) == "Edge") {
@@ -2331,6 +2334,10 @@ void ViewProviderSketch::onSelectionChanged(const Gui::SelectionChanges& msg)
                     }
                     updateColor();
                 }
+            }
+            else {
+                // something else than our own geometry was picked: use it as reference
+                autoIncludeExternalGeometry(msg);
             }
         }
         else if (msg.Type == Gui::SelectionChanges::RmvSelection) {
@@ -2421,6 +2428,95 @@ void ViewProviderSketch::onSelectionChanged(const Gui::SelectionChanges& msg)
         else if (msg.Type == Gui::SelectionChanges::RmvPreselect) {
             resetPreselectPoint();
         }
+    }
+}
+
+void ViewProviderSketch::autoIncludeExternalGeometry(const Gui::SelectionChanges& msg)
+{
+    if (autoIncludingExternal || !msg.pObjectName || !msg.pSubName) {
+        return;
+    }
+
+    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Mod/Sketcher/General"
+    );
+    if (!hGrp->GetBool("AutoExternalGeometry", true)) {
+        return;
+    }
+
+    // only shape elements can become external geometry
+    const std::string subname(msg.pSubName);
+    const bool isEdge = subname.size() > 4 && subname.substr(0, 4) == "Edge";
+    const bool isVertex = subname.size() > 6 && subname.substr(0, 6) == "Vertex";
+    const bool isFace = subname.size() > 4 && subname.substr(0, 4) == "Face";
+    if (!isEdge && !isVertex && !isFace) {
+        return;
+    }
+
+    App::Document* doc = getObject()->getDocument();
+    App::DocumentObject* obj = doc->getObject(msg.pObjectName);
+    if (!obj || obj == getObject()) {
+        return;
+    }
+
+    auto* sketch = getSketchObject();
+    Sketcher::SketchObject::eReasonList why = Sketcher::SketchObject::rlAllowed;
+    if (!sketch->isExternalAllowed(doc, obj, &why)) {
+        const char* reason = "it cannot be linked";
+        switch (why) {
+            case Sketcher::SketchObject::rlOtherDoc:
+                reason = "it belongs to another document";
+                break;
+            case Sketcher::SketchObject::rlCircularReference:
+                reason = "it would create a circular dependency";
+                break;
+            case Sketcher::SketchObject::rlOtherBody:
+                reason = "it belongs to another body and has to be bound in first "
+                         "(e.g. with a SubShapeBinder)";
+                break;
+            case Sketcher::SketchObject::rlOtherPart:
+                reason = "it belongs to another part and has to be bound in first "
+                         "(e.g. with a SubShapeBinder)";
+                break;
+            default:
+                break;
+        }
+        Base::Console().warning(
+            "Sketcher: '%s.%s' was not added as external geometry: %s.\n",
+            msg.pObjectName,
+            msg.pSubName,
+            reason
+        );
+        return;
+    }
+
+    // follow the existing preference of the external geometry tools
+    const bool reference = hGrp->GetBool("AlwaysExtGeoReference", false);
+
+    Base::StateLocker lock(autoIncludingExternal, true);
+    try {
+        Gui::Command::openCommand(QT_TRANSLATE_NOOP("Command", "Add external geometry"));
+        Gui::cmdAppObjectArgs(
+            sketch,
+            "addExternal(\"%s\",\"%s\", %s, %s)",
+            msg.pObjectName,
+            msg.pSubName,
+            reference ? "False" : "True",
+            "False"
+        );
+        Gui::Command::commitCommand();
+
+        // The solver geometry count changes, so the sketch has to be solved for the
+        // view provider to pick up the new external edges.
+        tryAutoRecomputeIfNotSolve(sketch);
+        Gui::Selection().clearSelection();
+    }
+    catch (const Base::Exception& e) {
+        Base::Console().error(
+            "Sketcher: failed to add external geometry: %s\n",
+            e.what()
+        );
+        Gui::Command::abortCommand();
     }
 }
 

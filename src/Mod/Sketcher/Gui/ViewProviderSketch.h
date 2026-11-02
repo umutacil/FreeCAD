@@ -606,6 +606,14 @@ public:
 
     /// Observer message from the Selection
     void onSelectionChanged(const Gui::SelectionChanges& msg) override;
+
+    /** Links the geometry picked on another object as external geometry.
+     *
+     * Turns a plain selection of an edge, vertex or face of another object into
+     * external geometry of the sketch being edited, so that model geometry can be
+     * referenced directly instead of activating the external geometry tool first.
+     */
+    void autoIncludeExternalGeometry(const Gui::SelectionChanges& msg);
     //@}
 
     /** @name Toggle angle snapping and set the reference point */
@@ -1000,6 +1008,9 @@ private:
     std::unique_ptr<ViewProviderSketch::ParameterObserver> pObserver;
 
     std::unique_ptr<DrawSketchHandler> sketchHandler;
+
+    /// Guards against re-entrance while external geometry is being linked
+    bool autoIncludingExternal = false;
 
     ViewProviderParameters viewProviderParameters;
 
